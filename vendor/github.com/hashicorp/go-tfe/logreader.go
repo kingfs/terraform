@@ -1,7 +1,6 @@
 package tfe
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -64,8 +63,13 @@ func (r *LogReader) read(l []byte) (int, error) {
 	}
 	req = req.WithContext(r.ctx)
 
+	// Attach the default headers.
+	for k, v := range r.client.headers {
+		req.Header[k] = v
+	}
+
 	// Retrieve the next chunk.
-	resp, err := r.client.http.Do(req)
+	resp, err := r.client.http.HTTPClient.Do(req)
 	if err != nil {
 		return 0, err
 	}
@@ -87,14 +91,30 @@ func (r *LogReader) read(l []byte) (int, error) {
 
 	if written > 0 {
 		// Check for an STX (Start of Text) ASCII control marker.
-		if !r.startOfText && bytes.Contains(l, []byte("\x02")) {
+		if !r.startOfText && l[0] == byte(2) {
 			r.startOfText = true
+
+			// Remove the STX marker from the received chunk.
+			copy(l[:written-1], l[1:])
+			l[written-1] = byte(0)
+			r.offset++
+			written--
+
+			// Return early if we only received the STX marker.
+			if written == 0 {
+				return 0, io.ErrNoProgress
+			}
 		}
 
 		// If we found an STX ASCII control character, start looking for
 		// the ETX (End of Text) control character.
-		if r.startOfText && bytes.Contains(l, []byte("\x03")) {
+		if r.startOfText && l[written-1] == byte(3) {
 			r.endOfText = true
+
+			// Remove the ETX marker from the received chunk.
+			l[written-1] = byte(0)
+			r.offset++
+			written--
 		}
 	}
 
